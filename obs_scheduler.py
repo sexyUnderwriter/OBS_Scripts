@@ -1,6 +1,7 @@
 import csv
 import time
 import os
+import sys
 from datetime import datetime
 from dotenv import load_dotenv
 from obswebsocket import obsws, requests
@@ -12,6 +13,15 @@ load_dotenv()
 HOST = os.getenv("OBS_WS_HOST", "localhost")
 PORT = int(os.getenv("OBS_WS_PORT", 4455))
 PASSWORD = os.getenv("OBS_WS_PASSWORD")
+
+def parse_datetime(date_str, time_str):
+    """Parse date and time, supporting both HH:MM and HH:MM:SS."""
+    for fmt in ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M"):
+        try:
+            return datetime.strptime(f"{date_str} {time_str}", fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Time data '{date_str} {time_str}' does not match expected formats.")
 
 def run_scheduler(csv_file):
     if not PASSWORD:
@@ -34,11 +44,15 @@ def run_scheduler(csv_file):
             with open(csv_file, mode='r') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    start = datetime.strptime(row['Date'] + ' ' + row['Local Time'], '%m/%d/%Y %H:%M')
-                    end = datetime.strptime(row['Date'] + ' ' + row['End Time'], '%m/%d/%Y %H:%M')
+                    try:
+                        start = parse_datetime(row['Date'], row['Local Time'])
+                        end = parse_datetime(row['Date'], row['End Time'])
+                    except Exception as e:
+                        print(f"Skipping row due to parse error: {e}")
+                        continue
                     
                     # Logic to Start Recording
-                    if start.strftime('%Y-%m-%d %H:%M') == now.strftime('%Y-%m-%d %H:%M'):
+                    if start.strftime('%Y-%m-%d %H:%M:%S') == now.strftime('%Y-%m-%d %H:%M:%S'):
                         ws.call(requests.SetProfileParameter(
                             parameterCategory="Output", 
                             parameterName="RecFilenameFormatting", 
@@ -48,20 +62,22 @@ def run_scheduler(csv_file):
                         print(f"[{now}] Start: {row['File Name']}")
                     
                     # Logic to Stop Recording
-                    if end.strftime('%Y-%m-%d %H:%M') == now.strftime('%Y-%m-%d %H:%M'):
+                    if end.strftime('%Y-%m-%d %H:%M:%S') == now.strftime('%Y-%m-%d %H:%M:%S'):
                         ws.call(requests.StopRecord())
                         print(f"[{now}] Stop: {row['File Name']}")
             
-            # Wait 30 seconds before next check to avoid double-triggering in the same minute
-            time.sleep(30) 
+            # Wait 1 second before next check for second-level precision
+            time.sleep(1) 
             
     except KeyboardInterrupt:
         print("Shutting down scheduler...")
         ws.disconnect()
 
 if __name__ == "__main__":
-    # Ensure the CSV exists before starting
-    csv_path = '2026_MLB_Schedule_Cubs_Only.csv'
+    if len(sys.argv) < 2:
+        print("Usage: python obs_scheduler.py <csv_file>")
+        sys.exit(1)
+    csv_path = sys.argv[1]
     if os.path.exists(csv_path):
         run_scheduler(csv_path)
     else:
